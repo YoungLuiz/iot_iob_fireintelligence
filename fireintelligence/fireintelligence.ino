@@ -28,7 +28,7 @@ const char* WIFI_SENHA  = "";
 const char* MQTT_HOST   = "broker.hivemq.com";
 const int   MQTT_PORTA  = 1883;
 
-const char* EQUIPE      = "equipe-caos";        // troque pelo nome da equipe (evita colisão no broker público)
+const char* EQUIPE      = "equipe-caos";      // nome da equipe (evita colisão no broker público)
 const char* ESTACAO_ID  = "EST-CHAPADA-01";
 
 const unsigned long INTERVALO_LEITURA_MS = 10000;
@@ -87,28 +87,31 @@ void publicarLeitura() {
   TempAndHumidity th = dht.getTempAndHumidity();
   tempAtual = th.temperature; umidAtual = th.humidity;
 
+  // Ordem pensada para leitura humana: quem, o quê, ambiente (IoT), pessoas (IoB), controle
   JsonDocument doc;
   doc["estacao"] = ESTACAO_ID;
   doc["tipo"] = "leitura";
-  doc["simulado"] = true;
   doc["seq"] = ++seq;
-  doc["uptime_s"] = millis() / 1000;
   if (isnan(tempAtual)) doc["temperatura_c"] = nullptr; else doc["temperatura_c"] = round(tempAtual * 10) / 10.0;
   if (isnan(umidAtual)) doc["umidade_pct"] = nullptr;   else doc["umidade_pct"]   = round(umidAtual * 10) / 10.0;
   doc["passagens_intervalo"] = passagensIntervalo;   // IoB: fluxo de pessoas, anônimo
   doc["passagens_total"] = passagensTotal;
   doc["relatos_total"] = relatosTotal;
   doc["intervalo_s"] = INTERVALO_LEITURA_MS / 1000;
+  doc["uptime_s"] = millis() / 1000;
+  doc["simulado"] = true;
 
-  char buf[320];
-  serializeJson(doc, buf);
+  char buf[512];
+  serializeJsonPretty(doc, buf, sizeof(buf));   // JSON indentado: fica legível no app MQTT
   bool publicou = mqtt.connected() && mqtt.publish(topicoLeituras.c_str(), buf);
   if (publicou) {
-    passagensIntervalo = 0;     // só zera se a leitura saiu
     Serial.printf("[IoT] Leitura publicada    | seq:%lu | T:%.1fC U:%.0f%% | Pass:%d\n",
       seq, tempAtual, umidAtual, passagensIntervalo);
+    passagensIntervalo = 0;     // só zera se a leitura saiu
+  } else if (!mqtt.connected()) {
+    Serial.printf("[IoT] Leitura NAO enviada  | sem conexao MQTT (estado=%d)\n", mqtt.state());
   } else {
-    Serial.println("[IoT] Leitura NAO enviada  | sem conexao MQTT");
+    Serial.printf("[IoT] Leitura NAO enviada  | falha ao publicar (%u bytes)\n", (unsigned)strlen(buf));
   }
 }
 
@@ -117,13 +120,13 @@ bool publicarRelato() {
   doc["estacao"] = ESTACAO_ID;
   doc["tipo"] = "relato_fumaca";
   doc["origem"] = "botao_campo";
-  doc["simulado"] = true;
-  doc["uptime_s"] = millis() / 1000;
   doc["relatos_total"] = relatosTotal;
-  char buf[200];
-  serializeJson(doc, buf);
+  doc["uptime_s"] = millis() / 1000;
+  doc["simulado"] = true;
+  char buf[300];
+  serializeJsonPretty(doc, buf, sizeof(buf));
   bool ok = mqtt.connected() && mqtt.publish(topicoEventos.c_str(), buf);
-  if (ok) Serial.printf("[IoB] Relato enviado       | total: %ld | %s\n", relatosTotal, buf);
+  if (ok) Serial.printf("[IoB] Relato enviado       | total: %ld\n", relatosTotal);
   else    Serial.printf("[IoB] Relato na fila       | total: %ld (sem conexao)\n", relatosTotal);
   return ok;
 }
@@ -192,6 +195,7 @@ void setup() {
 
   conectarWiFi();
   mqtt.setServer(MQTT_HOST, MQTT_PORTA);
+  mqtt.setBufferSize(768);   // o padrão (256 bytes) é pequeno para o JSON formatado
   conectarMQTT();
 
   Serial.println();
